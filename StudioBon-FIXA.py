@@ -3288,69 +3288,380 @@ def _sb_save_enemy_cases():
     _sb_config_set(_SB_CONFIG_ENEMY_CASES, dict(_sb_enemy_case_notes))
 
 
-def _sb_open_enemy_case(ident):
-    try:
-        _EnemyCaseWindow(ident)
-    except Exception as exc:
-        try: push("خطا در پرونده: " + str(exc)[:90], color=(1, 0.25, 0.25))
-        except Exception: pass
+class _StudioBonRadarWindow(_SBPanel):
+    """Cinematic radar UI using the reference mod's imagewidget FX approach."""
+    def __init__(self):
+        import math
+        import random
 
+        super().__init__("STUDIOBON  //  ADVANCED RADAR",
+                         accent=(0.25, 1.0, 0.78),
+                         width=980, height=720)
+        self._math = math
+        self._rng = random.Random()
+        self._started = time.monotonic()
+        self._angle = 0.0
+        self._closed = False
+        self._stars = []
+        self._sweep = []
+        self._contacts = []
+        self._ripples = []
+        self._roster = _sb_roster()
+        known = {item["id"].casefold() for item in _sb_enemies}
 
-class _EnemyCaseWindow:
-    def __init__(self, ident):
-        self.ident = str(ident)
-        sw, sh = bui.get_virtual_screen_size()
-        self.width, self.height = min(540, int(sw - 30)), min(560, int(sh - 30))
-        x, y = (sw - self.width) / 2, (sh - self.height) / 2
-        self.root = bui.containerwidget(parent=gsw("overlay_stack"), position=(x,y), size=(self.width,self.height), transition="in_scale", color=(0.015,0.06,0.28))
-        bui.textwidget(parent=self.root, position=(12,self.height-55), size=(self.width-24,38), text="🚔یگان دادگستری🚨", h_align="center", v_align="center", color=(1,1,1), scale=1.0)
-        bui.textwidget(parent=self.root, position=(20,self.height-95), size=(self.width-40,25), text="پرونده: "+self.ident[:45], h_align="left", color=(1,1,1), scale=0.65)
-        fy=92; fh=self.height-205
-        self.field_bg=bui.containerwidget(parent=self.root, position=(18,fy), size=(self.width-36,fh), background=True, color=(0.025,0.09,0.34))
-        bui.textwidget(parent=self.field_bg, position=(10,fh-28), size=(self.width-56,22), text="برای نوشتن، این قسمت را لمس کنید:", h_align="left", color=(0.75,0.85,1.0), scale=0.65)
-        self.field=bui.textwidget(parent=self.field_bg, position=(10,10), size=(self.width-56,fh-48), text=_sb_enemy_case_notes.get(self.ident,""), editable=True, max_chars=3000, maxwidth=self.width-65, h_align="left", v_align="top", color=(1,1,1), scale=0.8, flatness=1.0, shadow=0.3)
-        bui.buttonwidget(parent=self.root, position=(18,28), size=(300,42), label="ذخیره پرونده مجرم📋", color=(1.0,0.78,0.08), textcolor=(0.05,0.05,0.05), on_activate_call=self._save)
-        bui.buttonwidget(parent=self.root, position=(self.width-115,28), size=(95,42), label="بستن", color=(0.45,0.12,0.12), textcolor=(1,1,1), on_activate_call=self._close)
-    def _save(self):
+        # Layered rounded skin inspired by the reference mod.
         try:
-            _sb_enemy_case_notes[self.ident]=str(bui.textwidget(query=self.field))[:3000]
-            _sb_save_enemy_cases(); babase.app.config.commit()
-            push("پرونده مجرم ذخیره شد📋", color=(0.25,1,0.35), transient=True)
-        except Exception as exc:
-            try: push("ذخیره نشد: "+str(exc)[:80], color=(1,0.25,0.25))
-            except Exception: pass
-    def _close(self):
-        try: bui.containerwidget(edit=self.root, transition="out_scale")
-        except Exception: pass
+            bui.containerwidget(edit=self.root_widget, background=False)
+        except Exception:
+            pass
+        self._round_rect(0, 0, self._width, self._height, 28,
+                         (0.08, 0.72, 0.78))
+        self._round_rect(3, 3, self._width - 6, self._height - 6, 25,
+                         (0.006, 0.018, 0.035))
 
-_sb_enemies = []
-_sb_enemy_announced_this_session = set()
+        # Animated starfield.
+        star_tex = bui.gettexture("star")
+        soft_tex = bui.gettexture("circleSoft")
+        for i in range(28):
+            x = self._rng.uniform(12, self._width - 12)
+            y = self._rng.uniform(12, self._height - 12)
+            size = self._rng.uniform(4, 10)
+            self._stars.append({
+                "x": x, "y": y, "size": size,
+                "phase": self._rng.uniform(0, 6.28),
+                "speed": self._rng.uniform(0.6, 1.8),
+                "widget": bui.imagewidget(
+                    parent=self.root_widget, position=(x, y),
+                    size=(size, size), texture=star_tex,
+                    color=(0.35, 0.95, 1.0), opacity=0.0)
+            })
 
+        # Large circular radar scope.
+        self._cx, self._cy, self._radius = 250.0, 360.0, 205.0
+        d = self._radius * 2
 
-def _sb_load_enemies():
-    global _sb_enemies
-    raw = _sb_config_get(_SB_CONFIG_ENEMIES, [])
-    cleaned = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict):
-                ident = str(item.get("id", "")).strip()[:100]
-                label = str(item.get("name", "Player")).strip()[:60]
-                if ident and not any(x.get("id", "").casefold() == ident.casefold() for x in cleaned):
-                    cleaned.append({"id": ident, "name": label or "Player"})
-    _sb_enemies = cleaned
+        # Click surface stays underneath the radar graphics.
+        bw(parent=self.root_widget,
+           position=(self._cx - self._radius,
+                     self._cy - self._radius),
+           size=(d, d), button_type="square", label="",
+           color=(0.0, 0.0, 0.0), enable_sound=False,
+           on_activate_call=self._radar_tap)
 
+        bui.imagewidget(parent=self.root_widget,
+            position=(self._cx - self._radius,
+                      self._cy - self._radius),
+            size=(d, d), texture=bui.gettexture("circle"),
+            color=(0.005, 0.045, 0.055), opacity=0.98)
 
-def _sb_save_enemies():
-    _sb_config_set(_SB_CONFIG_ENEMIES, _sb_enemies)
+        bui.imagewidget(parent=self.root_widget,
+            position=(self._cx - self._radius - 3,
+                      self._cy - self._radius - 3),
+            size=(d + 6, d + 6),
+            texture=bui.gettexture("circleOutline"),
+            color=(0.12, 0.95, 0.82), opacity=0.95)
 
+        for radius in (160, 112, 62):
+            size = radius * 2
+            bui.imagewidget(parent=self.root_widget,
+                position=(self._cx - radius, self._cy - radius),
+                size=(size, size),
+                texture=bui.gettexture("circleOutline"),
+                color=(0.12, 0.62, 0.58), opacity=0.62)
 
-def _sb_person_device_id(person):
-    """Read V2/device/account display identity from nested server roster data."""
-    if not isinstance(person, dict):
-        return None
-    raw = person.get("raw", person)
-    wanted = (
+        bui.imagewidget(parent=self.root_widget,
+            position=(self._cx - 178, self._cy - 1),
+            size=(356, 2), texture=bui.gettexture("white"),
+            color=(0.12, 0.55, 0.5), opacity=0.45)
+
+        bui.imagewidget(parent=self.root_widget,
+            position=(self._cx - 1, self._cy - 178),
+            size=(2, 356), texture=bui.gettexture("white"),
+            color=(0.12, 0.55, 0.5), opacity=0.45)
+
+        # Rotating luminous sweep.
+        for i in range(18):
+            size = 8 + (i / 18.0) * 7
+            self._sweep.append(bui.imagewidget(
+                parent=self.root_widget,
+                position=(self._cx, self._cy),
+                size=(size, size), texture=soft_tex,
+                color=(0.25, 1.0, 0.72), opacity=0.0))
+
+        # Roster contacts: illustrative randomized positions,
+        # not real player coordinates.
+        for idx, person in enumerate(self._roster[:18]):
+            name = str(person.get("name", "Player"))
+            cid = str(person.get("client_id", -1))
+            ident = _sb_person_stable_id(person)
+            enemy = bool(ident and ident.casefold() in known)
+            seed = sum(ord(ch) for ch in (name + cid))
+            rng = random.Random(seed)
+            angle = rng.uniform(0.0, 6.283)
+            radius = rng.uniform(38.0, self._radius - 38.0)
+            x = self._cx + math.cos(angle) * radius
+            y = self._cy + math.sin(angle) * radius
+
+            dot = bui.imagewidget(
+                parent=self.root_widget,
+                position=(x - 8, y - 8), size=(16, 16),
+                texture=soft_tex,
+                color=(1.0, 0.12, 0.16) if enemy
+                      else (0.2, 0.95, 1.0),
+                opacity=0.95)
+
+            core = bui.imagewidget(
+                parent=self.root_widget,
+                position=(x - 3, y - 3), size=(6, 6),
+                texture=bui.gettexture("circle"),
+                color=(1, 1, 1), opacity=1.0)
+
+            self._contacts.append((dot, core, enemy, x, y, name))
+
+        # Expanding click-ripple pool.
+        for _ in range(4):
+            self._ripples.append({
+                "time": None, "x": self._cx, "y": self._cy,
+                "widget": bui.imagewidget(
+                    parent=self.root_widget,
+                    position=(self._cx, self._cy),
+                    size=(24, 24),
+                    texture=bui.gettexture("circleOutline"),
+                    color=(0.35, 1.0, 0.86), opacity=0.0)
+            })
+
+        # Header and controls are drawn above the animated background.
+        bui.textwidget(parent=self.root_widget,
+            position=(28, 652), size=(650, 34),
+            text="◉  STUDIOBON  /  TACTICAL RADAR",
+            h_align="left", v_align="center", scale=1.12,
+            color=(0.55, 1.0, 0.9), shadow=1.0, flatness=0.2)
+
+        bui.textwidget(parent=self.root_widget,
+            position=(30, 628), size=(700, 18),
+            text="LIVE ROSTER SCAN  •  SIGNAL CONTACTS  •  API 9",
+            h_align="left", v_align="center", scale=0.58,
+            color=(0.35, 0.72, 0.78))
+
+        bw(parent=self.root_widget,
+           position=(self._width - 58, self._height - 66),
+           size=(38, 38), button_type="square",
+           label="✕", text_scale=0.9,
+           color=(0.45, 0.035, 0.08), textcolor=(1, 1, 1),
+           on_activate_call=bui.WeakCall(self.close))
+
+        self._make_roster_panel()
+
+        self._make_button(500, 72, 205, 42,
+            "ENEMY DATABASE  ◈", _open_enemy_list,
+            (0.48, 0.035, 0.09))
+
+        self._make_button(720, 72, 230, 42,
+            "RESCAN SERVER  ⟳", _open_studiobon_radar,
+            (0.025, 0.34, 0.30))
+
+        bui.textwidget(parent=self.root_widget,
+            position=(45, 92), size=(410, 28),
+            text="CONTACTS ARE VISUAL / RANDOMIZED — NOT PLAYER COORDINATES",
+            h_align="center", v_align="center", scale=0.48,
+            color=(0.45, 0.72, 0.72))
+
+        self._tick()
+
+    def _round_rect(self, x, y, w, h, radius, color):
+        white = bui.gettexture("white")
+        disc = bui.gettexture("circle")
+
+        def add(px, py, pw, ph, tex):
+            bui.imagewidget(parent=self.root_widget,
+                position=(px, py), size=(pw, ph),
+                texture=tex, color=color, opacity=1.0)
+
+        r = min(radius, w / 2.0, h / 2.0)
+        add(x + r, y, w - 2 * r, h, white)
+        add(x, y + r, r, h - 2 * r, white)
+        add(x + w - r, y + r, r, h - 2 * r, white)
+        tile = 2 * r / 0.97
+
+        for cx, cy in (
+            (x + r, y + r), (x + w - r, y + r),
+            (x + r, y + h - r), (x + w - r, y + h - r)
+        ):
+            add(cx - tile / 2, cy - tile / 2, tile, tile, disc)
+
+    def _make_button(self, x, y, w, h, label, callback, color):
+        return bw(parent=self.root_widget,
+            position=(x, y), size=(w, h),
+            button_type="square", label=label, text_scale=0.68,
+            color=color, textcolor=(0.88, 1.0, 0.98),
+            on_activate_call=lambda cb=callback: self._run_action(cb))
+
+    def _run_action(self, callback):
+        self._pulse(self._cx, self._cy)
+        try:
+            callback()
+        except Exception:
+            pass
+
+    def _radar_tap(self):
+        self._pulse(self._cx, self._cy)
+        try:
+            bui.getsound("ding").play()
+        except Exception:
+            pass
+
+    def _pulse(self, x, y):
+        item = min(self._ripples,
+            key=lambda r: -1.0 if r["time"] is None else r["time"])
+        item.update(time=time.monotonic(), x=x, y=y)
+
+    def _make_roster_panel(self):
+        roster = self._roster
+        x, y, w, h = 490, 126, 460, 468
+
+        self._round_rect(x, y, w, h, 18, (0.08, 0.65, 0.68))
+        self._round_rect(x + 2, y + 2, w - 4, h - 4, 16,
+                         (0.012, 0.035, 0.052))
+
+        bui.textwidget(parent=self.root_widget,
+            position=(x + 18, y + h - 35),
+            size=(w - 36, 25),
+            text="SERVER ROSTER  /  %d ONLINE" % len(roster),
+            h_align="left", v_align="center", scale=0.72,
+            color=(0.45, 1.0, 0.88))
+
+        view_y, view_h = y + 18, h - 72
+        scroll = bui.scrollwidget(parent=self.root_widget,
+            position=(x + 10, view_y), size=(w - 20, view_h),
+            highlight=False, capture_arrows=True)
+
+        content_h = max(view_h, len(roster) * 58 + 12)
+        content = bui.containerwidget(parent=scroll,
+            size=(w - 20, content_h), background=False)
+
+        known = {item["id"].casefold() for item in _sb_enemies}
+
+        for idx, person in enumerate(roster):
+            row_y = content_h - 56 - idx * 58
+            name = str(person.get("name", "Player"))
+            cid = str(person.get("client_id", -1))
+            ident = _sb_person_stable_id(person)
+            enemy = bool(ident and ident.casefold() in known)
+
+            bw(parent=content,
+                position=(3, row_y), size=(w - 26, 50),
+                button_type="square", label="", enable_sound=False,
+                color=(0.22, 0.035, 0.065) if enemy
+                      else (0.025, 0.10, 0.13))
+
+            bui.textwidget(parent=content,
+                position=(12, row_y + 12), size=(155, 26),
+                text=name[:22], h_align="left",
+                v_align="center", scale=0.62,
+                color=(1.0, 0.42, 0.42) if enemy
+                      else (0.88, 0.98, 1.0))
+
+            bui.textwidget(parent=content,
+                position=(168, row_y + 12), size=(48, 26),
+                text=cid, h_align="left",
+                v_align="center", scale=0.58,
+                color=(0.55, 0.78, 0.86))
+
+            bui.textwidget(parent=content,
+                position=(218, row_y + 12), size=(112, 26),
+                text=(ident or "UNKNOWN")[:18],
+                h_align="left", v_align="center", scale=0.48,
+                color=(1.0, 0.38, 0.38) if enemy
+                      else (0.38, 0.92, 0.72))
+
+            bw(parent=content,
+                position=(w - 128, row_y + 8), size=(98, 34),
+                button_type="square",
+                label="TRACKED" if enemy else "ADD TARGET",
+                text_scale=0.48,
+                color=(0.38, 0.025, 0.06) if enemy
+                      else (0.025, 0.30, 0.27),
+                textcolor=(1, 1, 1),
+                on_activate_call=lambda p=person: self._run_action(
+                    lambda: _sb_add_enemy(p)))
+
+        if not roster:
+            bui.textwidget(parent=content,
+                position=(10, content_h - 90),
+                size=(w - 40, 60),
+                text="NO PLAYER SIGNALS\nCONNECT TO A SERVER TO SCAN",
+                h_align="center", v_align="center", scale=0.72,
+                color=(0.65, 0.82, 0.85))
+
+    def _tick(self):
+        if self._closed or not _widget_exists(self.root_widget):
+            return
+
+        try:
+            math = self._math
+            now = time.monotonic()
+            elapsed = now - self._started
+            self._angle = (elapsed * 1.35) % (math.pi * 2.0)
+
+            # Starfield drift and twinkle.
+            for star in self._stars:
+                phase = elapsed * star["speed"] + star["phase"]
+                x = star["x"] + math.sin(phase * 0.22) * 5
+                y = star["y"] + math.cos(phase * 0.19) * 4
+                opacity = 0.12 + 0.48 * (
+                    (1.0 + math.sin(phase)) * 0.5)
+                size = star["size"] * (
+                    0.8 + 0.3 * (1.0 + math.sin(phase)))
+                bui.imagewidget(edit=star["widget"],
+                    position=(x - size / 2, y - size / 2),
+                    size=(size, size), opacity=opacity)
+
+            # Rotating radar sweep with a fading luminous trail.
+            for i, widget in enumerate(self._sweep):
+                a = self._angle - i * 0.035
+                radius = 12 + i * 10.2
+                x = self._cx + math.cos(a) * radius
+                y = self._cy + math.sin(a) * radius
+                opacity = 0.82 * (1.0 - i / 20.0)
+                size = 13 - i * 0.35
+                bui.imagewidget(edit=widget,
+                    position=(x - size / 2, y - size / 2),
+                    size=(size, size), opacity=opacity)
+
+            # Enemy contacts blink red/white; other contacts stay cyan.
+            for dot, core, enemy, x, y, _name in self._contacts:
+                blink = (math.sin(
+                    elapsed * (7.0 if enemy else 2.0) + x) + 1.0) / 2.0
+                color = ((1.0, 0.08 + 0.55 * blink, 0.12)
+                         if enemy else (0.12, 0.78 + 0.2 * blink, 1.0))
+                bui.imagewidget(edit=dot, color=color,
+                    opacity=(0.42 + 0.55 * blink) if enemy
+                            else (0.55 + 0.3 * blink))
+                bui.imagewidget(edit=core, opacity=0.85 + 0.15 * blink)
+
+            # Expanding click ripples.
+            for ripple in self._ripples:
+                if ripple["time"] is None:
+                    continue
+                age = max(0.0, now - ripple["time"])
+                if age >= 1.15:
+                    ripple["time"] = None
+                    bui.imagewidget(edit=ripple["widget"], opacity=0.0)
+                    continue
+
+                f = age / 1.15
+                size = 24 + f * 390
+                bui.imagewidget(edit=ripple["widget"],
+                    position=(ripple["x"] - size / 2,
+                              ripple["y"] - size / 2),
+                    size=(size, size),
+                    opacity=0.72 * (1.0 - f) ** 1.4)
+
+        except Exception:
+            pass
+
+        teck(0.05, bui.WeakCall(self._tick))
+
         "account_display_string", "account_display_name", "account_name",
         "device_name", "device_display_string", "device_display_name",
         "v2_name", "v2name", "v2_alias", "device_alias", "device",
