@@ -3524,71 +3524,294 @@ def _open_studiobon_radar():
 
 
 class _StudioBonRadarWindow(_SBPanel):
-    """Radar uses the same roster fields as the reference PlayerInfo manager."""
+    """StudioBon animated tactical radar."""
     def __init__(self):
-        super().__init__("▣ STUDIOBON RADAR / PLAYER MANAGER",
-                         accent=(0.35, 0.72, 1.0), height=720)
-        try: bui.containerwidget(edit=self.root_widget, color=(0.015, 0.045, 0.28))
-        except Exception: pass
-        # Keep the existing enemy-list button.
-        bw(parent=self.root_widget, position=(20, self._height - 112), size=(70, 38),
-            button_type="square", label="🚫", text_scale=0.85,
-            color=(0.55, 0.03, 0.08), textcolor=(1, 1, 1),
-            on_activate_call=_open_enemy_list)
+        import math as _radar_math
+        self._radar_math = _radar_math
+        self._closed = False
+        self._frame = 0
+        self._theme_widgets = []
+        self._lamp_widgets = []
+        self._dot_widgets = []
+
+        self._themes = [
+            ((0.05, 0.95, 0.75), (0.02, 0.30, 0.27)),
+            ((0.15, 0.65, 1.0), (0.025, 0.16, 0.42)),
+            ((0.75, 0.35, 1.0), (0.22, 0.06, 0.38)),
+            ((1.0, 0.55, 0.12), (0.38, 0.12, 0.025)),
+            ((1.0, 0.25, 0.42), (0.35, 0.025, 0.12)),
+            ((0.25, 1.0, 0.35), (0.04, 0.30, 0.10)),
+        ]
+
+        super().__init__(
+            "◉ STUDIOBON // TACTICAL RADAR",
+            accent=(0.05, 0.95, 0.75), height=720)
+
         try:
-            roster = _sb_roster()
+            bui.containerwidget(
+                edit=self.root_widget,
+                color=(0.008, 0.025, 0.045))
         except Exception:
-            roster = []
-        bui.textwidget(parent=self.root_widget, position=(102, self._height - 112),
-            size=(self._width - 124, 36), text="ONLINE PLAYERS  •  %d" % len(roster),
-            h_align="left", v_align="center", scale=0.78, color=(0.65, 0.85, 1.0))
+            pass
+
+        self._enemy_btn = bw(
+            parent=self.root_widget,
+            position=(20, self._height - 112),
+            size=(70, 38), button_type="square",
+            label="🚫", text_scale=0.85,
+            color=(0.45, 0.025, 0.07),
+            textcolor=(1, 1, 1),
+            on_activate_call=_open_enemy_list)
+
+        self._online_label = bui.textwidget(
+            parent=self.root_widget,
+            position=(102, self._height - 112),
+            size=(self._width - 124, 36),
+            text="SCANNING NETWORK...",
+            h_align="left", v_align="center",
+            scale=0.78, color=(0.05, 0.95, 0.75))
+
+        # Radar display.
+        cx = self._width * 0.5
+        cy = self._height - 250
+
+        bui.textwidget(
+            parent=self.root_widget,
+            position=(cx - 105, cy - 105),
+            size=(210, 210), text="◎",
+            h_align="center", v_align="center",
+            scale=4.7, color=(0.025, 0.20, 0.17))
+
+        for symbol, scale in (("◎", 3.5), ("◉", 2.4)):
+            widget = bui.textwidget(
+                parent=self.root_widget,
+                position=(cx - 90, cy - 90),
+                size=(180, 180), text=symbol,
+                h_align="center", v_align="center",
+                scale=scale, color=(0.05, 0.95, 0.75))
+            self._theme_widgets.append(widget)
+
+        # Rotating sweep indicator.
+        self._beam_frames = ["↑", "↗", "→", "↘",
+                             "↓", "↙", "←", "↖"]
+        self._beam = bui.textwidget(
+            parent=self.root_widget,
+            position=(cx - 35, cy - 35),
+            size=(70, 70), text="↑",
+            h_align="center", v_align="center",
+            scale=2.8, color=(0.65, 1.0, 0.85))
+        self._theme_widgets.append(self._beam)
+
+        self._center = bui.textwidget(
+            parent=self.root_widget,
+            position=(cx - 35, cy - 7),
+            size=(70, 24), text="SB-09",
+            h_align="center", v_align="center",
+            scale=0.65, color=(1, 1, 1))
+
+        # Radar contact points.
+        for i in range(8):
+            angle = i * self._radar_math.pi / 4
+            dx = self._radar_math.cos(angle) * 66
+            dy = self._radar_math.sin(angle) * 66
+            dot = bui.textwidget(
+                parent=self.root_widget,
+                position=(cx + dx - 9, cy + dy - 9),
+                size=(18, 18), text="•",
+                h_align="center", v_align="center",
+                scale=1.4, color=(0.05, 0.95, 0.75))
+            self._dot_widgets.append(dot)
+            self._theme_widgets.append(dot)
+
+        self._scan_label = bui.textwidget(
+            parent=self.root_widget,
+            position=(20, cy - 116),
+            size=(self._width - 40, 22),
+            text="◈ ACTIVE SCAN  //  SYSTEM ONLINE",
+            h_align="center", v_align="center",
+            scale=0.62, color=(0.05, 0.95, 0.75))
+        self._theme_widgets.append(self._scan_label)
+
+        # Animated perimeter lights.
+        for i in range(14):
+            if i < 5:
+                x, y = 20 + i * ((self._width - 40) / 4), self._height - 135
+            elif i < 9:
+                x, y = self._width - 24, self._height - 135 - (i - 5) * 95
+            else:
+                x, y = self._width - 24 - (i - 9) * ((self._width - 40) / 4), 18
+
+            lamp = bui.textwidget(
+                parent=self.root_widget,
+                position=(x - 7, y - 7),
+                size=(14, 14), text="◆",
+                h_align="center", v_align="center",
+                scale=0.65, color=(0.05, 0.95, 0.75))
+            self._lamp_widgets.append(lamp)
+            self._theme_widgets.append(lamp)
+
+        # Player list remains fully functional.
+        roster = _sb_roster()
+        try:
+            bui.textwidget(edit=self._online_label,
+                           text="ONLINE CONTACTS  •  %d" % len(roster))
+        except Exception:
+            pass
+
         margin = 18
-        viewport_y = 54
-        viewport_h = max(180, self._height - 178)
+        viewport_y = 48
+        viewport_h = max(170, self._height - 420)
         inner_w = self._width - 2 * margin
-        scroll = bui.scrollwidget(parent=self.root_widget, position=(margin, viewport_y),
-            size=(inner_w, viewport_h), highlight=False, capture_arrows=True)
+
+        scroll = bui.scrollwidget(
+            parent=self.root_widget,
+            position=(margin, viewport_y),
+            size=(inner_w, viewport_h),
+            highlight=False, capture_arrows=True)
+
         content_h = max(viewport_h, len(roster) * 76 + 48)
-        content = bui.containerwidget(parent=scroll, size=(inner_w, content_h), background=False)
+        content = bui.containerwidget(
+            parent=scroll, size=(inner_w, content_h),
+            background=False)
+
         known = {item["id"].casefold() for item in _sb_enemies}
-        headers = (("PLAYER NAME", 12), ("CLIENT ID", 270), ("DEVICE / V2", 390))
-        for title, x in headers:
-            bui.textwidget(parent=content, position=(x, content_h - 28), size=(160, 22),
-                text=title, h_align="left", v_align="center", scale=0.58,
-                color=(0.6, 0.9, 1.0))
+
+        for title, x in (
+            ("PLAYER NAME", 12),
+            ("CLIENT ID", 270),
+            ("DEVICE / V2", 390)):
+            bui.textwidget(
+                parent=content,
+                position=(x, content_h - 28),
+                size=(160, 22), text=title,
+                h_align="left", v_align="center",
+                scale=0.58, color=(0.05, 0.95, 0.75))
+
         for idx, person in enumerate(roster):
             y = content_h - 78 - idx * 76
             name = str(person.get("name", "Player"))
             cid = str(person.get("client_id", -1))
             ident = _sb_person_stable_id(person)
-            is_enemy = bool(ident and ident.casefold() in known)
-            bg = (0.24, 0.06, 0.10) if is_enemy else ((0.06, 0.12, 0.22) if idx % 2 == 0 else (0.035, 0.085, 0.17))
-            bw(parent=content, position=(5, y), size=(inner_w - 10, 62),
-                button_type="square", label="", color=bg, enable_sound=False)
-            bui.textwidget(parent=content, position=(12, y + 16), size=(240, 36),
-                text=name[:36], h_align="left", v_align="center", scale=0.7,
-                color=(1, 0.38, 0.38) if is_enemy else (1, 1, 1))
-            bui.textwidget(parent=content, position=(270, y + 16), size=(100, 36),
-                text=cid, h_align="left", v_align="center", scale=0.65,
-                color=(0.8, 0.85, 1.0))
-            bui.textwidget(parent=content, position=(390, y + 16), size=(inner_w - 610, 36),
-                text=ident or "Not exposed by roster", h_align="left", v_align="center",
-                scale=0.62, color=(1, 0.38, 0.38) if is_enemy else (0.6, 1.0, 0.68))
-            # Preserve the existing add-to-enemy action; no PlayerInfo management
-            # controls such as Kick All are imported into this panel.
-            bw(parent=content, position=(inner_w - 205, y + 13), size=(190, 36),
-                button_type="square",
-                label="IN ENEMY LIST" if is_enemy else "Add to ENEMY'S list",
-                text_scale=0.54, color=(0.34, 0.025, 0.06) if is_enemy else (0.62, 0.025, 0.06),
-                textcolor=(1, 1, 1), on_activate_call=lambda p=person: _sb_add_enemy(p))
+            is_enemy = bool(
+                ident and ident.casefold() in known)
+
+            bg = ((0.24, 0.035, 0.07) if is_enemy else
+                  ((0.025, 0.13, 0.15) if idx % 2 == 0
+                   else (0.018, 0.075, 0.11)))
+
+            bw(parent=content, position=(5, y),
+               size=(inner_w - 10, 62),
+               button_type="square", label="",
+               color=bg, enable_sound=False)
+
+            bui.textwidget(
+                parent=content, position=(12, y + 16),
+                size=(240, 36), text=name[:36],
+                h_align="left", v_align="center",
+                scale=0.7,
+                color=(1, 0.38, 0.38) if is_enemy
+                else (0.9, 1, 1))
+
+            bui.textwidget(
+                parent=content, position=(270, y + 16),
+                size=(100, 36), text=cid,
+                h_align="left", v_align="center",
+                scale=0.65, color=(0.65, 0.85, 1))
+
+            bui.textwidget(
+                parent=content, position=(390, y + 16),
+                size=(inner_w - 610, 36),
+                text=ident or "Not exposed by roster",
+                h_align="left", v_align="center",
+                scale=0.62,
+                color=(1, 0.38, 0.38) if is_enemy
+                else (0.55, 1, 0.72))
+
+            bw(
+                parent=content,
+                position=(inner_w - 205, y + 13),
+                size=(190, 36), button_type="square",
+                label="IN ENEMY LIST" if is_enemy
+                else "Add to ENEMY'S list",
+                text_scale=0.54,
+                color=(0.34, 0.025, 0.06) if is_enemy
+                else (0.025, 0.28, 0.24),
+                textcolor=(1, 1, 1),
+                on_activate_call=lambda p=person: _sb_add_enemy(p))
+
         if not roster:
-            bui.textwidget(parent=content, position=(10, content_h - 90), size=(inner_w - 20, 60),
-                text="No players found. Open while connected to a server.",
-                h_align="center", v_align="center", scale=0.8, color=_SB_TEXT)
-        bw(parent=self.root_widget, position=(20, 12), size=(self._width - 40, 34),
-            button_type="square", label="REFRESH RADAR", text_scale=0.7,
-            color=(0.025, 0.16, 0.48), textcolor=(1, 1, 1),
+            bui.textwidget(
+                parent=content,
+                position=(10, content_h - 90),
+                size=(inner_w - 20, 60),
+                text="NO CONTACTS DETECTED\nCONNECT TO A SERVER",
+                h_align="center", v_align="center",
+                scale=0.8, color=(0.4, 0.9, 0.85))
+
+        bw(
+            parent=self.root_widget,
+            position=(20, 12),
+            size=(self._width - 40, 34),
+            button_type="square",
+            label="⟳  REFRESH RADAR",
+            text_scale=0.7,
+            color=(0.025, 0.25, 0.22),
+            textcolor=(1, 1, 1),
             on_activate_call=_open_studiobon_radar)
+
+        self._tick()
+
+    def _tick(self):
+        if self._closed or not _widget_exists(self.root_widget):
+            return
+
+        self._frame += 1
+        now = time.monotonic()
+
+        # Smoothly blend between six color themes.
+        phase = now / 7.0
+        index = int(phase) % len(self._themes)
+        fraction = phase - int(phase)
+        first = self._themes[index]
+        second = self._themes[(index + 1) % len(self._themes)]
+
+        accent = tuple(
+            a + (b - a) * fraction
+            for a, b in zip(first[0], second[0]))
+
+        for widget in self._theme_widgets:
+            try:
+                bui.textwidget(edit=widget, color=accent)
+            except Exception:
+                pass
+
+        # Sweep direction and blinking contact points.
+        try:
+            bui.textwidget(
+                edit=self._beam,
+                text=self._beam_frames[self._frame % 8])
+        except Exception:
+            pass
+
+        for i, dot in enumerate(self._dot_widgets):
+            try:
+                color = accent if (self._frame + i * 3) % 8 < 4 else (0.12, 0.22, 0.25)
+                bui.textwidget(edit=dot, color=color)
+            except Exception:
+                pass
+
+        for i, lamp in enumerate(self._lamp_widgets):
+            try:
+                color = accent if (self._frame + i) % 5 < 3 else (0.06, 0.12, 0.16)
+                bui.textwidget(edit=lamp, color=color)
+            except Exception:
+                pass
+
+        try:
+            teck(0.08, self._tick)
+        except Exception:
+            pass
+
 
 
 def _sb_reset_radar_stats():
